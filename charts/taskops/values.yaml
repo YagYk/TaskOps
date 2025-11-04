@@ -1,0 +1,11 @@
+image:
+  repository: "<ECR_REPO_URI_PLACEHOLDER>"
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+
+resources: {}
+

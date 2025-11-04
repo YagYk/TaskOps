@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TaskOps - Todo App</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 10px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+      padding: 30px;
+    }
+    h1 {
+      color: #333;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    .input-group {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    input[type="text"] {
+      flex: 1;
+      padding: 12px;
+      border: 2px solid #ddd;
+      border-radius: 5px;
+      font-size: 16px;
+    }
+    input[type="text"]:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    button {
+      padding: 12px 24px;
+      background: #667eea;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    button:hover {
+      background: #5568d3;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .todo-list {
+      list-style: none;
+    }
+    .todo-item {
+      display: flex;
+      align-items: center;
+      padding: 15px;
+      margin-bottom: 10px;
+      background: #f8f9fa;
+      border-radius: 5px;
+      border-left: 4px solid #667eea;
+    }
+    .todo-item.done {
+      opacity: 0.6;
+      border-left-color: #28a745;
+    }
+    .todo-item input[type="checkbox"] {
+      margin-right: 15px;
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+    }
+    .todo-item span {
+      flex: 1;
+      font-size: 16px;
+    }
+    .todo-item.done span {
+      text-decoration: line-through;
+    }
+    .todo-item button {
+      padding: 8px 16px;
+      background: #dc3545;
+      font-size: 14px;
+    }
+    .todo-item button:hover {
+      background: #c82333;
+    }
+    .error {
+      color: #dc3545;
+      background: #f8d7da;
+      padding: 10px;
+      border-radius: 5px;
+      margin-bottom: 20px;
+    }
+    .loading {
+      text-align: center;
+      color: #666;
+      padding: 20px;
+    }
+    .health-status {
+      font-size: 12px;
+      color: #666;
+      text-align: center;
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid #eee;
+    }
+    .health-status.ok {
+      color: #28a745;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📝 TaskOps</h1>
+    <div id="error" class="error" style="display: none;"></div>
+    <div class="input-group">
+      <input type="text" id="todoInput" placeholder="Add a new todo..." />
+      <button onclick="addTodo()">Add</button>
+    </div>
+    <div id="loading" class="loading" style="display: none;">Loading...</div>
+    <ul id="todoList" class="todo-list"></ul>
+    <div id="healthStatus" class="health-status">Checking health...</div>
+  </div>
+
+  <script>
+    const API_BASE = '/api/todos';
+    let todos = [];
+
+    // Load todos and check health on page load
+    window.onload = () => {
+      loadTodos();
+      checkHealth();
+    };
+
+    async function checkHealth() {
+      try {
+        const response = await fetch('/healthz');
+        const data = await response.json();
+        const statusDiv = document.getElementById('healthStatus');
+        statusDiv.textContent = `✓ Health: ${data.status}`;
+        statusDiv.className = 'health-status ok';
+      } catch (error) {
+        const statusDiv = document.getElementById('healthStatus');
+        statusDiv.textContent = `✗ Health: Error`;
+        statusDiv.className = 'health-status';
+      }
+    }
+
+    async function loadTodos() {
+      try {
+        showLoading(true);
+        const response = await fetch(API_BASE);
+        if (!response.ok) throw new Error('Failed to load todos');
+        todos = await response.json();
+        renderTodos();
+      } catch (error) {
+        showError('Failed to load todos: ' + error.message);
+      } finally {
+        showLoading(false);
+      }
+    }
+
+    async function addTodo() {
+      const input = document.getElementById('todoInput');
+      const text = input.value.trim();
+      
+      if (!text) {
+        showError('Please enter a todo');
+        return;
+      }
+
+      try {
+        showLoading(true);
+        const response = await fetch(API_BASE, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Failed to add todo');
+        }
+
+        const newTodo = await response.json();
+        todos.push(newTodo);
+        input.value = '';
+        renderTodos();
+        hideError();
+      } catch (error) {
+        showError('Failed to add todo: ' + error.message);
+      } finally {
+        showLoading(false);
+      }
+    }
+
+    async function toggleTodo(id) {
+      const todo = todos.find(t => t.id === id);
+      if (!todo) return;
+
+      try {
+        const response = await fetch(`${API_BASE}/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ done: !todo.done }),
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Failed to update todo');
+        }
+
+        const updated = await response.json();
+        const index = todos.findIndex(t => t.id === id);
+        todos[index] = updated;
+        renderTodos();
+      } catch (error) {
+        showError('Failed to update todo: ' + error.message);
+      }
+    }
+
+    async function deleteTodo(id) {
+      try {
+        const response = await fetch(`${API_BASE}/${id}`, {
+          method: 'DELETE',
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Failed to delete todo');
+        }
+
+        todos = todos.filter(t => t.id !== id);
+        renderTodos();
+      } catch (error) {
+        showError('Failed to delete todo: ' + error.message);
+      }
+    }
+
+    function renderTodos() {
+      const list = document.getElementById('todoList');
+      list.innerHTML = '';
+
+      if (todos.length === 0) {
+        list.innerHTML = '<li style="text-align: center; color: #666; padding: 20px;">No todos yet. Add one above!</li>';
+        return;
+      }
+
+      todos.forEach(todo => {
+        const li = document.createElement('li');
+        li.className = 'todo-item' + (todo.done ? ' done' : '');
+        li.innerHTML = `
+          <input type="checkbox" ${todo.done ? 'checked' : ''} onchange="toggleTodo(${todo.id})" />
+          <span>${escapeHtml(todo.text)}</span>
+          <button onclick="deleteTodo(${todo.id})">Delete</button>
+        `;
+        list.appendChild(li);
+      });
+    }
+
+    function showError(message) {
+      const errorDiv = document.getElementById('error');
+      errorDiv.textContent = message;
+      errorDiv.style.display = 'block';
+    }
+
+    function hideError() {
+      document.getElementById('error').style.display = 'none';
+    }
+
+    function showLoading(show) {
+      document.getElementById('loading').style.display = show ? 'block' : 'none';
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Allow Enter key to add todo
+    document.getElementById('todoInput').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        addTodo();
+      }
+    });
+  </script>
+</body>
+</html>

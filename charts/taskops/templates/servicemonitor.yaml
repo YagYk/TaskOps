@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "taskops.fullname" . }}
+  labels:
+    {{- include "taskops.labels" . | nindent 4 }}
+    release: prom-stack
+spec:
+  selector:
+    matchLabels:
+      {{- include "taskops.selectorLabels" . | nindent 6 }}
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 15s
+
