@@ -89,10 +89,10 @@ pipeline {
         script {
           echo "Building Docker image with tags: ${env.IMAGE_TAG} and ${env.IMAGE_LATEST}"
         }
-        sh '''
-          docker build -t taskops:$IMAGE_TAG .
-          docker tag taskops:$IMAGE_TAG taskops:$IMAGE_LATEST
-        '''
+        sh """
+          docker build -t taskops:${env.IMAGE_TAG} .
+          docker tag taskops:${env.IMAGE_TAG} taskops:${env.IMAGE_LATEST}
+        """
       }
     }
 
@@ -102,26 +102,49 @@ pipeline {
           echo 'Logging into AWS ECR and pushing image...'
           withCredentials([aws(credentialsId: 'aws-creds', accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
             sh """
-              # Install AWS CLI if not present
-              if ! command -v aws &> /dev/null; then
-                echo "Installing AWS CLI..."
-                curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-                unzip awscliv2.zip
-                sudo ./aws/install
+              # Export AWS credentials
+              export AWS_ACCESS_KEY_ID=\${AWS_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=\${AWS_SECRET_ACCESS_KEY}
+              export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+              
+              # Check if AWS CLI is installed (check multiple locations)
+              AWS_CLI_PATH=""
+              if command -v aws &> /dev/null; then
+                AWS_CLI_PATH="aws"
+              elif [ -f /usr/local/bin/aws ]; then
+                AWS_CLI_PATH="/usr/local/bin/aws"
+                export PATH=/usr/local/bin:\$PATH
+              elif [ -f /usr/local/aws/bin/aws ]; then
+                AWS_CLI_PATH="/usr/local/aws/bin/aws"
+                export PATH=/usr/local/aws/bin:\$PATH
+              elif [ -f /var/lib/jenkins/.local/bin/aws ]; then
+                AWS_CLI_PATH="/var/lib/jenkins/.local/bin/aws"
+                export PATH=/var/lib/jenkins/.local/bin:\$PATH
+              else
+                echo "Installing AWS CLI v2 (user space, no sudo)..."
+                mkdir -p /var/lib/jenkins/.local
+                curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+                unzip -q /tmp/awscliv2.zip -d /tmp
+                /tmp/aws/install -i /var/lib/jenkins/.local/aws-cli -b /var/lib/jenkins/.local/bin
+                AWS_CLI_PATH="/var/lib/jenkins/.local/bin/aws"
+                export PATH=/var/lib/jenkins/.local/bin:\$PATH
               fi
               
               # Verify AWS CLI
-              aws --version || echo "AWS CLI check failed"
+              \$AWS_CLI_PATH --version || { echo "AWS CLI verification failed"; exit 1; }
               
               # Login to ECR
-              ECR_PASSWORD=\$(aws ecr get-login-password --region ${AWS_DEFAULT_REGION})
-              echo "\$ECR_PASSWORD" | docker login --username AWS --password-stdin ${ECR_REPO.split('/')[0]}
+              ECR_REGISTRY="${ECR_REPO.split('/')[0]}"
+              ECR_PASSWORD=\$(\$AWS_CLI_PATH ecr get-login-password --region ${AWS_DEFAULT_REGION})
+              echo "\$ECR_PASSWORD" | docker login --username AWS --password-stdin \$ECR_REGISTRY || { echo "ECR login failed"; exit 1; }
               
               # Tag and push
-              docker tag taskops:${IMAGE_LATEST} ${ECR_REPO}:${IMAGE_TAG}
-              docker tag taskops:${IMAGE_LATEST} ${ECR_REPO}:${IMAGE_LATEST}
-              docker push ${ECR_REPO}:${IMAGE_TAG}
-              docker push ${ECR_REPO}:${IMAGE_LATEST}
+              docker tag taskops:${env.IMAGE_LATEST} ${ECR_REPO}:${env.IMAGE_TAG} || { echo "Failed to tag image"; exit 1; }
+              docker tag taskops:${env.IMAGE_LATEST} ${ECR_REPO}:${env.IMAGE_LATEST} || { echo "Failed to tag image"; exit 1; }
+              docker push ${ECR_REPO}:${env.IMAGE_TAG} || { echo "Failed to push image"; exit 1; }
+              docker push ${ECR_REPO}:${env.IMAGE_LATEST} || { echo "Failed to push image"; exit 1; }
+              
+              echo "Successfully pushed images to ECR"
             """
           }
         }
@@ -134,8 +157,36 @@ pipeline {
           echo 'Configuring kubectl for EKS cluster...'
           withCredentials([aws(credentialsId: 'aws-creds', accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
             sh """
-              aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${EKS_CLUSTER_NAME} --kubeconfig ${KUBECONFIG}
-              kubectl --kubeconfig=${KUBECONFIG} get nodes
+              # Export AWS credentials
+              export AWS_ACCESS_KEY_ID=\${AWS_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=\${AWS_SECRET_ACCESS_KEY}
+              export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+              
+              # Find AWS CLI
+              AWS_CLI_PATH=""
+              if command -v aws &> /dev/null; then
+                AWS_CLI_PATH="aws"
+              elif [ -f /usr/local/bin/aws ]; then
+                AWS_CLI_PATH="/usr/local/bin/aws"
+                export PATH=/usr/local/bin:\$PATH
+              elif [ -f /usr/local/aws/bin/aws ]; then
+                AWS_CLI_PATH="/usr/local/aws/bin/aws"
+                export PATH=/usr/local/aws/bin:\$PATH
+              elif [ -f /var/lib/jenkins/.local/bin/aws ]; then
+                AWS_CLI_PATH="/var/lib/jenkins/.local/bin/aws"
+                export PATH=/var/lib/jenkins/.local/bin:\$PATH
+              else
+                echo "AWS CLI not found. Please install AWS CLI first."
+                exit 1
+              fi
+              
+              # Update kubeconfig
+              \$AWS_CLI_PATH eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${EKS_CLUSTER_NAME} --kubeconfig ${KUBECONFIG} || { echo "Failed to update kubeconfig"; exit 1; }
+              
+              # Verify kubectl can access cluster
+              kubectl --kubeconfig=${KUBECONFIG} get nodes || { echo "Failed to connect to EKS cluster"; exit 1; }
+              
+              echo "Successfully configured kubeconfig for EKS cluster"
             """
           }
         }
@@ -153,24 +204,49 @@ pipeline {
               --namespace taskops --create-namespace \
               --kubeconfig=${KUBECONFIG} \
               --set image.repository=${ECR_REPO} \
-              --set image.tag=${IMAGE_LATEST} \
+              --set image.tag=${env.IMAGE_LATEST} \
               --set service.type=LoadBalancer \
               --set service.port=8000 \
-              --wait --timeout 5m
+              --wait --timeout 5m || { echo "Helm deployment failed"; exit 1; }
           """
           
           // Get LoadBalancer URL
           sh """
-            echo "Waiting for LoadBalancer to be ready..."
+            echo "Waiting for pods to be ready..."
             kubectl --kubeconfig=${KUBECONFIG} wait --namespace taskops \
               --for=condition=ready pod \
               --selector=app.kubernetes.io/name=taskops \
-              --timeout=300s || true
+              --timeout=300s || { echo "Pods not ready"; exit 1; }
             
-            APP_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc taskops -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-            if [ -z "\$APP_URL" ]; then
-              APP_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc taskops -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            echo "Getting LoadBalancer URL..."
+            # Get service name (could be taskops-taskops or taskops depending on Helm naming)
+            SERVICE_NAME=\$(kubectl --kubeconfig=${KUBECONFIG} get svc -n taskops -l app.kubernetes.io/name=taskops -o jsonpath='{.items[0].metadata.name}')
+            
+            if [ -z "\$SERVICE_NAME" ]; then
+              echo "Service not found, trying default name..."
+              SERVICE_NAME="taskops-taskops"
             fi
+            
+            echo "Service name: \$SERVICE_NAME"
+            
+            # Wait for LoadBalancer to get an external IP/hostname
+            for i in {1..30}; do
+              APP_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc \$SERVICE_NAME -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+              if [ -z "\$APP_URL" ]; then
+                APP_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc \$SERVICE_NAME -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+              fi
+              if [ -n "\$APP_URL" ]; then
+                break
+              fi
+              echo "Waiting for LoadBalancer... (\$i/30)"
+              sleep 10
+            done
+            
+            if [ -z "\$APP_URL" ]; then
+              echo "WARNING: LoadBalancer not ready yet. Service may still be provisioning."
+              APP_URL="pending"
+            fi
+            
             echo "Application URL: http://\${APP_URL}:8000" > app-url.txt
             echo "Application deployed at: http://\${APP_URL}:8000"
           """
@@ -186,24 +262,40 @@ pipeline {
         script {
           echo 'Installing Prometheus/Grafana monitoring stack...'
           sh """
-            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-            helm repo update
+            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || echo "Repo already exists"
+            helm repo update || { echo "Failed to update helm repos"; exit 1; }
             helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
               --namespace monitoring --create-namespace \
               --kubeconfig=${KUBECONFIG} \
               --set prometheus.service.type=LoadBalancer \
               --set grafana.service.type=LoadBalancer \
               --set grafana.adminPassword=admin \
-              --wait --timeout 10m
+              --wait --timeout 10m || { echo "Failed to install monitoring stack"; exit 1; }
           """
           
           // Get Grafana URL
           sh """
+            echo "Waiting for Grafana service to be ready..."
             sleep 30
-            GRAFANA_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            
+            # Wait for Grafana LoadBalancer
+            for i in {1..20}; do
+              GRAFANA_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+              if [ -z "\$GRAFANA_URL" ]; then
+                GRAFANA_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+              fi
+              if [ -n "\$GRAFANA_URL" ]; then
+                break
+              fi
+              echo "Waiting for Grafana LoadBalancer... (\$i/20)"
+              sleep 10
+            done
+            
             if [ -z "\$GRAFANA_URL" ]; then
-              GRAFANA_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+              echo "WARNING: Grafana LoadBalancer not ready yet"
+              GRAFANA_URL="pending"
             fi
+            
             echo "Grafana URL: http://\${GRAFANA_URL}" > grafana-url.txt
             echo "Grafana deployed at: http://\${GRAFANA_URL}"
             echo "Username: admin"
@@ -218,24 +310,44 @@ pipeline {
         script {
           echo 'Running smoke tests on EKS deployment...'
           sh """
-            # Get LoadBalancer URL
-            APP_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc taskops -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-            if [ -z "\$APP_URL" ]; then
-              APP_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc taskops -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            # Get service name
+            SERVICE_NAME=\$(kubectl --kubeconfig=${KUBECONFIG} get svc -n taskops -l app.kubernetes.io/name=taskops -o jsonpath='{.items[0].metadata.name}')
+            
+            if [ -z "\$SERVICE_NAME" ]; then
+              SERVICE_NAME="taskops-taskops"
             fi
             
+            # Get LoadBalancer URL
+            APP_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc \$SERVICE_NAME -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
             if [ -z "\$APP_URL" ]; then
+              APP_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc \$SERVICE_NAME -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            fi
+            
+            if [ -z "\$APP_URL" ] || [ "\$APP_URL" = "pending" ]; then
               echo "LoadBalancer not ready yet, using port-forward..."
-              kubectl --kubeconfig=${KUBECONFIG} port-forward -n taskops svc/taskops 8000:8000 &
+              kubectl --kubeconfig=${KUBECONFIG} port-forward -n taskops svc/\$SERVICE_NAME 8000:8000 > /dev/null 2>&1 &
+              PF_PID=\$!
               sleep 10
-              curl -f http://localhost:8000/healthz || echo "Health check failed"
-              curl -f http://localhost:8000/metrics | head -20 || echo "Metrics check failed"
-              pkill -f "kubectl port-forward" || true
+              
+              echo "Testing health endpoint via port-forward..."
+              curl -f http://localhost:8000/healthz || { echo "Health check failed"; kill \$PF_PID 2>/dev/null; exit 1; }
+              
+              echo "Testing metrics endpoint via port-forward..."
+              curl -f http://localhost:8000/metrics | head -20 || { echo "Metrics check failed"; kill \$PF_PID 2>/dev/null; exit 1; }
+              
+              kill \$PF_PID 2>/dev/null || true
+              echo "Smoke tests passed via port-forward"
             else
               echo "Testing application at: http://\${APP_URL}:8000"
               sleep 30  # Wait for LoadBalancer to be fully ready
-              curl -f http://\${APP_URL}:8000/healthz || echo "Health check failed"
-              curl -f http://\${APP_URL}:8000/metrics | head -20 || echo "Metrics check failed"
+              
+              echo "Testing health endpoint..."
+              curl -f http://\${APP_URL}:8000/healthz || { echo "Health check failed"; exit 1; }
+              
+              echo "Testing metrics endpoint..."
+              curl -f http://\${APP_URL}:8000/metrics | head -20 || { echo "Metrics check failed"; exit 1; }
+              
+              echo "Smoke tests passed"
             fi
           """
         }
