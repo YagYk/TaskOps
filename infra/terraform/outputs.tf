@@ -56,3 +56,13 @@ output "eks_cluster_kubeconfig_command" {
   description = "Command to update kubeconfig for EKS cluster"
   value       = "aws eks update-kubeconfig --region ${var.region} --name ${module.eks.cluster_name} --profile taskops"
 }
+
+output "eks_cluster_security_group_id" {
+  description = "Security group ID attached to the EKS cluster"
+  value       = module.eks.cluster_security_group_id
+}
+
+output "jenkins_security_group_id" {
+  description = "Security group ID attached to Jenkins instance"
+  value       = aws_security_group.jenkins.id
+}

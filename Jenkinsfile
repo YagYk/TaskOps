@@ -198,11 +198,38 @@ pipeline {
               
               echo "Using AWS CLI at: \$AWS_CLI_PATH"
               
-              # Update kubeconfig
-              \$AWS_CLI_PATH eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${EKS_CLUSTER_NAME} --kubeconfig ${KUBECONFIG} || { echo "Failed to update kubeconfig"; exit 1; }
+              # Update kubeconfig with public endpoint access
+              echo "Updating kubeconfig for EKS cluster..."
+              \$AWS_CLI_PATH eks update-kubeconfig \
+                --region ${AWS_DEFAULT_REGION} \
+                --name ${EKS_CLUSTER_NAME} \
+                --kubeconfig ${KUBECONFIG} || { echo "Failed to update kubeconfig"; exit 1; }
               
-              # Verify kubectl can access cluster
-              kubectl --kubeconfig=${KUBECONFIG} get nodes || { echo "Failed to connect to EKS cluster"; exit 1; }
+              # Verify kubectl can access cluster with retries
+              echo "Verifying EKS cluster connection..."
+              MAX_RETRIES=5
+              RETRY_COUNT=0
+              while [ \$RETRY_COUNT -lt \$MAX_RETRIES ]; do
+                if kubectl --kubeconfig=${KUBECONFIG} get nodes --request-timeout=30s > /dev/null 2>&1; then
+                  echo "Successfully connected to EKS cluster"
+                  kubectl --kubeconfig=${KUBECONFIG} get nodes
+                  break
+                else
+                  RETRY_COUNT=\$((RETRY_COUNT + 1))
+                  echo "Connection attempt \$RETRY_COUNT/\$MAX_RETRIES failed. Retrying in 10 seconds..."
+                  if [ \$RETRY_COUNT -lt \$MAX_RETRIES ]; then
+                    sleep 10
+                  else
+                    echo "ERROR: Failed to connect to EKS cluster after \$MAX_RETRIES attempts"
+                    echo "This might be due to:"
+                    echo "1. Security group not allowing access from Jenkins"
+                    echo "2. EKS cluster endpoint not accessible"
+                    echo "3. Network connectivity issues"
+                    echo "Please check the EKS cluster security group and ensure it allows traffic from Jenkins security group"
+                    exit 1
+                  fi
+                fi
+              done
               
               echo "Successfully configured kubeconfig for EKS cluster"
             """
