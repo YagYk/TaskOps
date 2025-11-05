@@ -77,10 +77,12 @@ pipeline {
         echo 'Running tests inside node:18-alpine container...'
         sh '''
           docker run --rm \
+            --memory=1g \
+            --memory-swap=1g \
             -v "$PWD":/workspace \
             -w /workspace \
             node:18-alpine \
-            sh -c "npm ci && npm test"
+            sh -c "npm ci && npm test" || { echo "Tests failed"; exit 1; }
         '''
       }
     }
@@ -91,8 +93,15 @@ pipeline {
           echo "Building Docker image with tags: ${env.IMAGE_TAG} and ${env.IMAGE_LATEST}"
         }
         sh """
-          docker build -t taskops:${env.IMAGE_TAG} .
-          docker tag taskops:${env.IMAGE_TAG} taskops:${env.IMAGE_LATEST}
+          # Clean up old images to free space
+          docker image prune -f || true
+          
+          # Build with buildkit for better performance
+          DOCKER_BUILDKIT=1 docker build \
+            --progress=plain \
+            --tag taskops:${env.IMAGE_TAG} \
+            --tag taskops:${env.IMAGE_LATEST} \
+            . || { echo "Docker build failed"; exit 1; }
         """
       }
     }
@@ -201,10 +210,30 @@ pipeline {
               
               # Update kubeconfig with public endpoint access
               echo "Updating kubeconfig for EKS cluster..."
+              echo "Using public endpoint (if available) or forcing public access..."
+              
+              # Get cluster details first
+              CLUSTER_INFO=\$(\$AWS_CLI_PATH eks describe-cluster \
+                --region ${AWS_DEFAULT_REGION} \
+                --name ${EKS_CLUSTER_NAME} \
+                --query 'cluster.[endpoint,resourcesVpcConfig.clusterSecurityGroupId]' \
+                --output text) || { echo "Failed to describe cluster"; exit 1; }
+              
+              echo "Cluster endpoint info: \$CLUSTER_INFO"
+              
+              # Update kubeconfig - force public endpoint
               \$AWS_CLI_PATH eks update-kubeconfig \
                 --region ${AWS_DEFAULT_REGION} \
                 --name ${EKS_CLUSTER_NAME} \
                 --kubeconfig ${KUBECONFIG} || { echo "Failed to update kubeconfig"; exit 1; }
+              
+              # Verify kubeconfig was created
+              if [ ! -f ${KUBECONFIG} ]; then
+                echo "ERROR: kubeconfig file not created"
+                exit 1
+              fi
+              
+              echo "Kubeconfig created successfully"
               
               # Verify kubectl can access cluster with retries
               echo "Verifying EKS cluster connection..."
@@ -403,8 +432,19 @@ pipeline {
 
   post {
     always {
-      echo 'Cleaning up Docker images...'
-      sh 'docker image prune -f || true'
+      script {
+        echo 'Cleaning up Docker resources...'
+        sh '''
+          # Clean up unused Docker images
+          docker image prune -af || true
+          
+          # Clean up build cache
+          docker builder prune -af || true
+          
+          # Show disk usage
+          df -h / | head -2
+        '''
+      }
     }
     success {
       echo 'Pipeline completed successfully!'
@@ -412,6 +452,10 @@ pipeline {
     }
     failure {
       echo 'Pipeline failed. Check logs for details.'
+      script {
+        // Clean up on failure to free resources
+        sh 'docker image prune -af || true'
+      }
     }
   }
 }

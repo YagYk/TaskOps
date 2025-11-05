@@ -13,9 +13,6 @@ module "eks" {
   
   # Allow public access from anywhere (you can restrict this to specific IPs)
   cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
-  
-  # Allow private access from VPC
-  cluster_endpoint_private_access_cidrs = [module.vpc.vpc_cidr_block]
 
   # EKS Managed Node Group
   eks_managed_node_groups = {
@@ -39,7 +36,7 @@ module "eks" {
   }
 }
 
-# Security group rule to allow Jenkins to access EKS endpoint
+# Security group rule to allow Jenkins to access EKS endpoint (from Jenkins security group)
 resource "aws_security_group_rule" "eks_endpoint_from_jenkins" {
   type                     = "ingress"
   from_port                = 443
@@ -48,5 +45,16 @@ resource "aws_security_group_rule" "eks_endpoint_from_jenkins" {
   source_security_group_id = aws_security_group.jenkins.id
   security_group_id        = module.eks.cluster_security_group_id
   description              = "Allow Jenkins to access EKS cluster endpoint"
+}
+
+# Security group rule to allow access from VPC (for private endpoint access)
+resource "aws_security_group_rule" "eks_endpoint_from_vpc" {
+  type              = "ingress"
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  cidr_blocks       = [module.vpc.vpc_cidr_block]
+  security_group_id = module.eks.cluster_security_group_id
+  description       = "Allow access to EKS endpoint from VPC"
 }
 
