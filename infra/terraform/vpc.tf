@@ -17,17 +17,17 @@ module "vpc" {
   enable_dns_support   = true
 
   tags = {
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+    Name = "${var.cluster_name}-vpc"
+    Environment = "dev"
+    Application = "taskops"
   }
 
   public_subnet_tags = {
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    "kubernetes.io/role/elb"                   = "1"
+    Name = "${var.cluster_name}-public-subnet"
   }
 
   private_subnet_tags = {
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    "kubernetes.io/role/internal-elb"          = "1"
+    Name = "${var.cluster_name}-private-subnet"
   }
 }
 

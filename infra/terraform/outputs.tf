@@ -1,30 +1,58 @@
-output "cluster_name" {
-  description = "EKS cluster name"
+# Jenkins outputs
+output "jenkins_public_ip" {
+  description = "Public IP of Jenkins instance"
+  value       = aws_instance.jenkins.public_ip
+}
+
+output "jenkins_url" {
+  description = "Jenkins URL"
+  value       = "http://${aws_instance.jenkins.public_ip}:8080"
+}
+
+output "jenkins_initial_password" {
+  description = "Jenkins initial admin password (stored on server)"
+  value       = "Run: ssh -i ${replace(var.public_key_path, ".pub", "")} ubuntu@${aws_instance.jenkins.public_ip} 'sudo cat /var/lib/jenkins/secrets/initialAdminPassword'"
+}
+
+# Kubernetes outputs
+output "k8s_master_public_ip" {
+  description = "Public IP of Kubernetes master"
+  value       = aws_instance.k8s_master.public_ip
+}
+
+output "k8s_worker_ips" {
+  description = "Public IPs of Kubernetes workers"
+  value       = aws_instance.k8s_workers[*].public_ip
+}
+
+output "ssh_to_jenkins" {
+  description = "SSH command to Jenkins"
+  value       = "ssh -i ${replace(var.public_key_path, ".pub", "")} ubuntu@${aws_instance.jenkins.public_ip}"
+}
+
+output "ssh_to_k8s_master" {
+  description = "SSH command to K8s master"
+  value       = "ssh -i ${replace(var.public_key_path, ".pub", "")} ubuntu@${aws_instance.k8s_master.public_ip}"
+}
+
+# ECR output
+output "ecr_repo_url" {
+  description = "ECR repository URL"
+  value       = aws_ecr_repository.taskops.repository_url
+}
+
+# EKS outputs
+output "eks_cluster_name" {
+  description = "Name of the EKS cluster"
   value       = module.eks.cluster_name
 }
 
-output "cluster_endpoint" {
+output "eks_cluster_endpoint" {
   description = "Endpoint for EKS control plane"
   value       = module.eks.cluster_endpoint
 }
 
-output "cluster_certificate_authority_data" {
-  description = "Base64 encoded certificate data required to communicate with the cluster"
-  value       = module.eks.cluster_certificate_authority_data
-  sensitive   = true
-}
-
-output "cluster_oidc_issuer_url" {
-  description = "The URL on the EKS cluster OIDC Issuer"
-  value       = module.eks.cluster_oidc_issuer_url
-}
-
-output "node_group_role_arn" {
-  description = "IAM role ARN of the EKS managed node group"
-  value       = module.eks.eks_managed_node_groups.main.iam_role_arn
-}
-
-output "ecr_repo_url" {
-  description = "ECR repository URL"
-  value       = aws_ecr_repository.taskops.repository_url
+output "eks_cluster_kubeconfig_command" {
+  description = "Command to update kubeconfig for EKS cluster"
+  value       = "aws eks update-kubeconfig --region ${var.region} --name ${module.eks.cluster_name} --profile taskops"
 }

@@ -1,176 +1,281 @@
 pipeline {
   agent any
 
+  // Trigger on Git push (webhook or polling)
+  triggers {
+    // Poll SCM every 2 minutes (alternative to webhook)
+    pollSCM('H/2 * * * *')
+  }
+
   parameters {
     choice(
       name: 'DEPLOY_TARGET',
-      choices: ['ec2', 'eks'],
-      description: 'Deployment target'
+      choices: ['eks'],
+      description: 'Deployment target (EKS)'
     )
     booleanParam(
       name: 'INSTALL_MONITORING',
-      defaultValue: false,
+      defaultValue: true,
       description: 'Install Prometheus/Grafana monitoring stack'
     )
   }
 
   environment {
     AWS_DEFAULT_REGION = 'ap-south-1'
-    ECR_REPO = '<AWS_ACCOUNT_ID>.dkr.ecr.ap-south-1.amazonaws.com/taskops'
-    EC2_HOST = '<EC2_PUBLIC_DNS_OR_IP>'
-    EC2_USER = 'ec2-user'
+    AWS_ACCOUNT_ID = '483746227398'
+    ECR_REPO = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/taskops"
+    EKS_CLUSTER_NAME = 'taskops-k8s'
     DOCKER_HUB_USER = '<DOCKER_HUB_USER>'
     GIT_SHORT_SHA = "${env.GIT_COMMIT.take(7)}"
     IMAGE_TAG = "${GIT_SHORT_SHA}"
     IMAGE_LATEST = "latest"
+    KUBECONFIG = "${WORKSPACE}/kubeconfig"
   }
 
   options {
     timeout(time: 30, unit: 'MINUTES')
     timestamps()
+    disableConcurrentBuilds()
   }
 
   stages {
+
+    stage('Preflight') {
+      steps {
+        script {
+          if (!env.DEPLOY_TARGET)         { error 'DEPLOY_TARGET is required' }
+          if (env.DEPLOY_TARGET == 'eks' && ( !env.ECR_REPO || env.ECR_REPO.contains('<AWS_ACCOUNT_ID>') )) {
+            error 'Set a real ECR_REPO, e.g. 123456789012.dkr.ecr.ap-south-1.amazonaws.com/taskops'
+          }
+          if (env.DEPLOY_TARGET == 'ec2' && ( !env.DOCKER_HUB_USER || env.DOCKER_HUB_USER.contains('<') )) {
+            echo 'Note: DOCKER_HUB_USER not set; EC2 path expects Docker Hub pushes.'
+          }
+        }
+        sh 'printenv | sort'
+      }
+    }
+
     stage('Checkout') {
       steps {
         echo 'Checking out code from repository...'
         checkout scm
+        script {
+          env.SHORT_SHA = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+          env.IMAGE_TAG = env.SHORT_SHA
+          // Derive ECR registry (the hostname part before first '/')
+          env.ECR_REGISTRY = env.ECR_REPO.contains('/') ? env.ECR_REPO.split('/')[0] : env.ECR_REPO
+          echo "SHORT_SHA=${env.SHORT_SHA}, ECR_REGISTRY=${env.ECR_REGISTRY}"
+        }
       }
     }
 
     stage('Node Tests') {
       steps {
         echo 'Running tests inside node:18-alpine container...'
-        script {
-          sh '''
-            docker run --rm \
-              -v ${WORKSPACE}:/workspace \
-              -w /workspace \
-              node:18-alpine \
-              sh -c "npm ci && npm test"
-          '''
-        }
+        sh '''
+          docker run --rm \
+            -v "$PWD":/workspace \
+            -w /workspace \
+            node:18-alpine \
+            sh -c "npm ci && npm test"
+        '''
       }
     }
 
     stage('Docker Build & Tag') {
       steps {
         script {
-          echo "Building Docker image with tags: ${IMAGE_TAG} and ${IMAGE_LATEST}"
+          echo "Building Docker image with tags: ${env.IMAGE_TAG} and ${env.IMAGE_LATEST}"
+        }
+        sh '''
+          docker build -t taskops:$IMAGE_TAG .
+          docker tag taskops:$IMAGE_TAG taskops:$IMAGE_LATEST
+        '''
+      }
+    }
+
+    stage('Login & Push to ECR') {
+      steps {
+        script {
+<<<<<<< HEAD
+          echo 'Logging into AWS ECR and pushing image...'
+          withCredentials([aws(credentialsId: 'aws-creds', accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+            sh """
+              aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | \
+                docker login --username AWS --password-stdin ${ECR_REPO.split('/')[0]}
+              docker tag taskops:${IMAGE_LATEST} ${ECR_REPO}:${IMAGE_TAG}
+              docker tag taskops:${IMAGE_LATEST} ${ECR_REPO}:${IMAGE_LATEST}
+              docker push ${ECR_REPO}:${IMAGE_TAG}
+              docker push ${ECR_REPO}:${IMAGE_LATEST}
+            """
+=======
+          if (params.DEPLOY_TARGET == 'eks') {
+            echo 'Pushing to ECR...'
+            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+              sh '''
+                aws --version
+                aws ecr get-login-password --region $AWS_DEFAULT_REGION \
+                  | docker login --username AWS --password-stdin $ECR_REGISTRY
+
+                docker tag taskops:$IMAGE_LATEST $ECR_REPO:$IMAGE_TAG
+                docker tag taskops:$IMAGE_LATEST $ECR_REPO:$IMAGE_LATEST
+
+                docker push $ECR_REPO:$IMAGE_TAG
+                docker push $ECR_REPO:$IMAGE_LATEST
+              '''
+            }
+          } else {
+            echo 'Pushing to Docker Hub...'
+            withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+              sh '''
+                echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+                docker tag taskops:$IMAGE_LATEST $DOCKER_HUB_USER/taskops:$IMAGE_TAG
+                docker tag taskops:$IMAGE_LATEST $DOCKER_HUB_USER/taskops:$IMAGE_LATEST
+                docker push $DOCKER_HUB_USER/taskops:$IMAGE_TAG
+                docker push $DOCKER_HUB_USER/taskops:$IMAGE_LATEST
+              '''
+            }
+>>>>>>> f5be0f5f164050d31dd1d3507c330f03fd747cc3
+          }
+        }
+      }
+    }
+
+    stage('Configure EKS kubeconfig') {
+      steps {
+        script {
+<<<<<<< HEAD
+          echo 'Configuring kubectl for EKS cluster...'
+          withCredentials([aws(credentialsId: 'aws-creds', accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+            sh """
+              aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${EKS_CLUSTER_NAME} --kubeconfig ${KUBECONFIG}
+              kubectl --kubeconfig=${KUBECONFIG} get nodes
+            """
+=======
+          if (params.DEPLOY_TARGET == 'ec2') {
+            echo 'Deploying to EC2 using Docker Compose on this/remote EC2...'
+            sshagent(credentials: ['ec2-ssh']) {
+              // Copy compose
+              sh '''
+                scp -o StrictHostKeyChecking=no deploy/ec2/docker-compose.yml $EC2_USER@$EC2_HOST:/tmp/taskops-compose.yml
+              '''
+              // Login and run compose with image override env
+              withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+                sh '''
+                  ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST '
+                    echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+                    docker pull $DOCKER_HUB_USER/taskops:$IMAGE_LATEST || true
+                    TASKOPS_IMAGE=$DOCKER_HUB_USER/taskops:$IMAGE_LATEST docker compose -f /tmp/taskops-compose.yml up -d
+                  '
+                '''
+              }
+            }
+          } else {
+            echo 'Deploying to EKS using Terraform and Helm...'
+            dir('infra/terraform') {
+              withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+                sh '''
+                  terraform --version
+                  terraform init -upgrade
+                  terraform apply -auto-approve
+                '''
+              }
+            }
+            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+              sh '''
+                aws eks update-kubeconfig --region $AWS_DEFAULT_REGION --name taskops-eks
+                kubectl get nodes
+              '''
+            }
+            sh '''
+              helm upgrade --install taskops charts/taskops \
+                --namespace $K8S_NS --create-namespace \
+                --set image.repository=$ECR_REPO \
+                --set image.tag=$IMAGE_LATEST \
+                --set service.type=LoadBalancer \
+                --wait --timeout 5m
+            '''
+            if (params.INSTALL_MONITORING) {
+              sh '''
+                helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+                helm repo update
+                helm upgrade --install prom-stack prometheus-community/kube-prometheus-stack \
+                  --namespace monitoring --create-namespace --wait --timeout 10m
+              '''
+            }
+>>>>>>> f5be0f5f164050d31dd1d3507c330f03fd747cc3
+          }
+        }
+      }
+    }
+
+    stage('Deploy to EKS') {
+      steps {
+        script {
+          echo 'Deploying to EKS using Helm...'
+          
+          // Install/upgrade Helm chart with LoadBalancer for web access
           sh """
-            docker build -t taskops:${IMAGE_TAG} .
-            docker tag taskops:${IMAGE_TAG} taskops:${IMAGE_LATEST}
+            helm upgrade --install taskops charts/taskops \
+              --namespace taskops --create-namespace \
+              --kubeconfig=${KUBECONFIG} \
+              --set image.repository=${ECR_REPO} \
+              --set image.tag=${IMAGE_LATEST} \
+              --set service.type=LoadBalancer \
+              --set service.port=8000 \
+              --wait --timeout 5m
+          """
+          
+          // Get LoadBalancer URL
+          sh """
+            echo "Waiting for LoadBalancer to be ready..."
+            kubectl --kubeconfig=${KUBECONFIG} wait --namespace taskops \
+              --for=condition=ready pod \
+              --selector=app.kubernetes.io/name=taskops \
+              --timeout=300s || true
+            
+            APP_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc taskops -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            if [ -z "\$APP_URL" ]; then
+              APP_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc taskops -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            fi
+            echo "Application URL: http://\${APP_URL}:8000" > app-url.txt
+            echo "Application deployed at: http://\${APP_URL}:8000"
           """
         }
       }
     }
 
-    stage('Login & Push') {
-      steps {
-        script {
-          // Determine which registry to push to based on deploy target
-          if (params.DEPLOY_TARGET == 'eks') {
-            // Push to ECR
-            echo 'Logging into AWS ECR...'
-            withCredentials([aws(credentialsId: '<JENKINS_CRED_ID:aws-creds>', accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
-              sh """
-                aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | \
-                  docker login --username AWS --password-stdin ${ECR_REPO.split('/')[0]}
-              """
-              sh """
-                docker tag taskops:${IMAGE_LATEST} ${ECR_REPO}:${IMAGE_TAG}
-                docker tag taskops:${IMAGE_LATEST} ${ECR_REPO}:${IMAGE_LATEST}
-                docker push ${ECR_REPO}:${IMAGE_TAG}
-                docker push ${ECR_REPO}:${IMAGE_LATEST}
-              """
-            }
-          } else {
-            // Push to Docker Hub (optional)
-            echo 'Logging into Docker Hub...'
-            withCredentials([usernamePassword(credentialsId: '<JENKINS_CRED_ID:dockerhub-creds>', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
-              sh """
-                echo ${DOCKER_PASSWORD} | docker login -u ${DOCKER_USERNAME} --password-stdin
-              """
-              sh """
-                docker tag taskops:${IMAGE_LATEST} ${DOCKER_HUB_USER}/taskops:${IMAGE_TAG}
-                docker tag taskops:${IMAGE_LATEST} ${DOCKER_HUB_USER}/taskops:${IMAGE_LATEST}
-                docker push ${DOCKER_HUB_USER}/taskops:${IMAGE_TAG}
-                docker push ${DOCKER_HUB_USER}/taskops:${IMAGE_LATEST}
-              """
-            }
-          }
-        }
+    stage('Install Monitoring') {
+      when {
+        expression { params.INSTALL_MONITORING == true }
       }
-    }
-
-    stage('Deploy') {
       steps {
         script {
-          if (params.DEPLOY_TARGET == 'ec2') {
-            echo 'Deploying to EC2 using Docker Compose...'
-            
-            // Copy docker-compose.yml to EC2
-            sshagent(credentials: ['<JENKINS_CRED_ID:ec2-ssh>']) {
-              sh """
-                scp deploy/ec2/docker-compose.yml ${EC2_USER}@${EC2_HOST}:/tmp/taskops-compose.yml
-              """
-              
-              // Login to registry and pull image
-              if (params.DEPLOY_TARGET == 'ec2') {
-                withCredentials([usernamePassword(credentialsId: '<JENKINS_CRED_ID:dockerhub-creds>', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
-                  sh """
-                    ssh ${EC2_USER}@${EC2_HOST} "
-                      echo ${DOCKER_PASSWORD} | docker login -u ${DOCKER_USERNAME} --password-stdin
-                      docker pull ${DOCKER_HUB_USER}/taskops:${IMAGE_LATEST}
-                      TASKOPS_IMAGE=${DOCKER_HUB_USER}/taskops:${IMAGE_LATEST} docker compose -f /tmp/taskops-compose.yml up -d
-                    "
-                  """
-                }
-              }
-            }
-            
-          } else if (params.DEPLOY_TARGET == 'eks') {
-            echo 'Deploying to EKS using Terraform and Helm...'
-            
-            // Provision/update EKS infrastructure
-            dir('infra/terraform') {
-              withCredentials([aws(credentialsId: '<JENKINS_CRED_ID:aws-creds>', accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
-                sh """
-                  terraform init
-                  terraform apply -auto-approve
-                """
-              }
-            }
-            
-            // Update kubeconfig
-            withCredentials([aws(credentialsId: '<JENKINS_CRED_ID:aws-creds>', accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
-              sh """
-                aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${sh(script: 'cd infra/terraform && terraform output -raw cluster_name', returnStdout: true).trim()}
-              """
-            }
-            
-            // Install/upgrade Helm chart
-            sh """
-              helm upgrade --install taskops charts/taskops \
-                --namespace taskops --create-namespace \
-                --set image.repository=${ECR_REPO} \
-                --set image.tag=${IMAGE_LATEST} \
-                --set service.type=LoadBalancer \
-                --wait --timeout 5m
-            """
-            
-            // Install monitoring if requested
-            if (params.INSTALL_MONITORING) {
-              echo 'Installing Prometheus/Grafana monitoring stack...'
-              sh """
-                helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-                helm repo update
-                helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
-                  --namespace monitoring --create-namespace \
-                  --wait --timeout 5m
-              """
-            }
-          }
+          echo 'Installing Prometheus/Grafana monitoring stack...'
+          sh """
+            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+            helm repo update
+            helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+              --namespace monitoring --create-namespace \
+              --kubeconfig=${KUBECONFIG} \
+              --set prometheus.service.type=LoadBalancer \
+              --set grafana.service.type=LoadBalancer \
+              --set grafana.adminPassword=admin \
+              --wait --timeout 10m
+          """
+          
+          // Get Grafana URL
+          sh """
+            sleep 30
+            GRAFANA_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            if [ -z "\$GRAFANA_URL" ]; then
+              GRAFANA_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            fi
+            echo "Grafana URL: http://\${GRAFANA_URL}" > grafana-url.txt
+            echo "Grafana deployed at: http://\${GRAFANA_URL}"
+            echo "Username: admin"
+            echo "Password: admin"
+          """
         }
       }
     }
@@ -178,32 +283,55 @@ pipeline {
     stage('Smoke Tests') {
       steps {
         script {
+<<<<<<< HEAD
+          echo 'Running smoke tests on EKS deployment...'
+          sh """
+            # Get LoadBalancer URL
+            APP_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc taskops -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            if [ -z "\$APP_URL" ]; then
+              APP_URL=\$(kubectl --kubeconfig=${KUBECONFIG} get svc taskops -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            fi
+            
+            if [ -z "\$APP_URL" ]; then
+              echo "LoadBalancer not ready yet, using port-forward..."
+              kubectl --kubeconfig=${KUBECONFIG} port-forward -n taskops svc/taskops 8000:8000 &
+              sleep 10
+              curl -f http://localhost:8000/healthz || echo "Health check failed"
+              curl -f http://localhost:8000/metrics | head -20 || echo "Metrics check failed"
+              pkill -f "kubectl port-forward" || true
+            else
+              echo "Testing application at: http://\${APP_URL}:8000"
+              sleep 30  # Wait for LoadBalancer to be fully ready
+              curl -f http://\${APP_URL}:8000/healthz || echo "Health check failed"
+              curl -f http://\${APP_URL}:8000/metrics | head -20 || echo "Metrics check failed"
+            fi
+          """
+=======
           if (params.DEPLOY_TARGET == 'ec2') {
             echo 'Running smoke tests on EC2 deployment...'
-            sh """
-              curl -f http://${EC2_HOST}:8000/healthz
-              curl -f http://${EC2_HOST}:8000/metrics | head -20
-            """
-          } else if (params.DEPLOY_TARGET == 'eks') {
+            sh '''
+              curl -f http://$EC2_HOST:8000/healthz
+              curl -s http://$EC2_HOST:8000/metrics | head -20
+            '''
+          } else {
             echo 'Running smoke tests on EKS deployment...'
-            sh """
-              # Get LoadBalancer hostname
-              LB_HOST=$(kubectl get svc taskops -n taskops -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-              
+            sh '''
+              LB_HOST="$(kubectl get svc taskops -n $K8S_NS -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
               if [ -z "$LB_HOST" ]; then
                 echo "LoadBalancer not ready, using port-forward fallback..."
-                kubectl port-forward -n taskops svc/taskops 8000:8000 &
+                (kubectl -n $K8S_NS port-forward svc/taskops 18000:8000 >/tmp/pf.log 2>&1 & echo $! > /tmp/pf.pid)
                 sleep 5
-                curl -f http://localhost:8000/healthz
-                curl -f http://localhost:8000/metrics | head -20
-                pkill -f "kubectl port-forward"
+                curl -f http://localhost:18000/healthz
+                curl -s http://localhost:18000/metrics | head -20
+                kill $(cat /tmp/pf.pid) || true
               else
                 echo "Testing via LoadBalancer: $LB_HOST"
                 curl -f http://$LB_HOST:8000/healthz
-                curl -f f http://$LB_HOST:8000/metrics | head -20
+                curl -s http://$LB_HOST:8000/metrics | head -20
               fi
-            """
+            '''
           }
+>>>>>>> f5be0f5f164050d31dd1d3507c330f03fd747cc3
         }
       }
     }
