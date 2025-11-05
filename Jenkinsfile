@@ -107,31 +107,43 @@ pipeline {
               export AWS_SECRET_ACCESS_KEY=\${AWS_SECRET_ACCESS_KEY}
               export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
               
-              # Check if AWS CLI is installed (check multiple locations)
+              # Check if AWS CLI is installed and working (check multiple locations)
               AWS_CLI_PATH=""
-              if command -v aws &> /dev/null; then
+              
+              # First check if aws is in PATH and works
+              if command -v aws > /dev/null 2>&1 && aws --version > /dev/null 2>&1; then
                 AWS_CLI_PATH="aws"
-              elif [ -f /usr/local/bin/aws ]; then
+              # Check common installation locations
+              elif [ -f /usr/local/bin/aws ] && /usr/local/bin/aws --version > /dev/null 2>&1; then
                 AWS_CLI_PATH="/usr/local/bin/aws"
                 export PATH=/usr/local/bin:\$PATH
-              elif [ -f /usr/local/aws/bin/aws ]; then
+              elif [ -f /usr/local/aws/bin/aws ] && /usr/local/aws/bin/aws --version > /dev/null 2>&1; then
                 AWS_CLI_PATH="/usr/local/aws/bin/aws"
                 export PATH=/usr/local/aws/bin:\$PATH
-              elif [ -f /var/lib/jenkins/.local/bin/aws ]; then
+              elif [ -f /var/lib/jenkins/.local/bin/aws ] && /var/lib/jenkins/.local/bin/aws --version > /dev/null 2>&1; then
                 AWS_CLI_PATH="/var/lib/jenkins/.local/bin/aws"
                 export PATH=/var/lib/jenkins/.local/bin:\$PATH
               else
-                echo "Installing AWS CLI v2 (user space, no sudo)..."
-                mkdir -p /var/lib/jenkins/.local
-                curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
-                unzip -q /tmp/awscliv2.zip -d /tmp
-                /tmp/aws/install -i /var/lib/jenkins/.local/aws-cli -b /var/lib/jenkins/.local/bin
+                echo "AWS CLI not found. Installing AWS CLI v2 (user space, no sudo)..."
+                mkdir -p /var/lib/jenkins/.local/bin
+                cd /tmp
+                curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip || { echo "Failed to download AWS CLI"; exit 1; }
+                unzip -q awscliv2.zip || { echo "Failed to unzip AWS CLI"; exit 1; }
+                ./aws/install -i /var/lib/jenkins/.local/aws-cli -b /var/lib/jenkins/.local/bin || { echo "Failed to install AWS CLI"; exit 1; }
                 AWS_CLI_PATH="/var/lib/jenkins/.local/bin/aws"
                 export PATH=/var/lib/jenkins/.local/bin:\$PATH
+                cd -
               fi
               
-              # Verify AWS CLI
-              \$AWS_CLI_PATH --version || { echo "AWS CLI verification failed"; exit 1; }
+              # Verify AWS CLI works
+              if ! \$AWS_CLI_PATH --version > /dev/null 2>&1; then
+                echo "AWS CLI verification failed. Path: \$AWS_CLI_PATH"
+                echo "PATH: \$PATH"
+                exit 1
+              fi
+              
+              echo "Using AWS CLI at: \$AWS_CLI_PATH"
+              \$AWS_CLI_PATH --version
               
               # Login to ECR
               ECR_REGISTRY="${ECR_REPO.split('/')[0]}"
@@ -162,23 +174,29 @@ pipeline {
               export AWS_SECRET_ACCESS_KEY=\${AWS_SECRET_ACCESS_KEY}
               export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
               
-              # Find AWS CLI
+              # Find AWS CLI (same logic as ECR stage)
               AWS_CLI_PATH=""
-              if command -v aws &> /dev/null; then
+              
+              # First check if aws is in PATH and works
+              if command -v aws > /dev/null 2>&1 && aws --version > /dev/null 2>&1; then
                 AWS_CLI_PATH="aws"
-              elif [ -f /usr/local/bin/aws ]; then
+              # Check common installation locations
+              elif [ -f /usr/local/bin/aws ] && /usr/local/bin/aws --version > /dev/null 2>&1; then
                 AWS_CLI_PATH="/usr/local/bin/aws"
                 export PATH=/usr/local/bin:\$PATH
-              elif [ -f /usr/local/aws/bin/aws ]; then
+              elif [ -f /usr/local/aws/bin/aws ] && /usr/local/aws/bin/aws --version > /dev/null 2>&1; then
                 AWS_CLI_PATH="/usr/local/aws/bin/aws"
                 export PATH=/usr/local/aws/bin:\$PATH
-              elif [ -f /var/lib/jenkins/.local/bin/aws ]; then
+              elif [ -f /var/lib/jenkins/.local/bin/aws ] && /var/lib/jenkins/.local/bin/aws --version > /dev/null 2>&1; then
                 AWS_CLI_PATH="/var/lib/jenkins/.local/bin/aws"
                 export PATH=/var/lib/jenkins/.local/bin:\$PATH
               else
-                echo "AWS CLI not found. Please install AWS CLI first."
+                echo "AWS CLI not found. It should have been installed in the previous stage."
+                echo "Please check the 'Login & Push to ECR' stage logs."
                 exit 1
               fi
+              
+              echo "Using AWS CLI at: \$AWS_CLI_PATH"
               
               # Update kubeconfig
               \$AWS_CLI_PATH eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${EKS_CLUSTER_NAME} --kubeconfig ${KUBECONFIG} || { echo "Failed to update kubeconfig"; exit 1; }
