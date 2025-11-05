@@ -43,11 +43,13 @@ pipeline {
     stage('Preflight') {
       steps {
         script {
-          if (!env.DEPLOY_TARGET)         { error 'DEPLOY_TARGET is required' }
-          if (env.DEPLOY_TARGET == 'eks' && ( !env.ECR_REPO || env.ECR_REPO.contains('<AWS_ACCOUNT_ID>') )) {
+          if (!params.DEPLOY_TARGET) {
+            error 'DEPLOY_TARGET is required'
+          }
+          if (params.DEPLOY_TARGET == 'eks' && ( !env.ECR_REPO || env.ECR_REPO.contains('<AWS_ACCOUNT_ID>') )) {
             error 'Set a real ECR_REPO, e.g. 123456789012.dkr.ecr.ap-south-1.amazonaws.com/taskops'
           }
-          if (env.DEPLOY_TARGET == 'ec2' && ( !env.DOCKER_HUB_USER || env.DOCKER_HUB_USER.contains('<') )) {
+          if (params.DEPLOY_TARGET == 'ec2' && ( !env.DOCKER_HUB_USER || env.DOCKER_HUB_USER.contains('<') )) {
             echo 'Note: DOCKER_HUB_USER not set; EC2 path expects Docker Hub pushes.'
           }
         }
