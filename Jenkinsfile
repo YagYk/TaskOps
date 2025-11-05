@@ -35,7 +35,8 @@ pipeline {
   options {
     timeout(time: 30, unit: 'MINUTES')
     timestamps()
-    disableConcurrentBuilds()
+    disableConcurrentBuilds()  // Keep disabled to avoid resource exhaustion
+    retry(1)  // Retry failed builds once
   }
 
   stages {

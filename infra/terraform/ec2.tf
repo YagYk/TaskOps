@@ -1,7 +1,7 @@
 # EC2 Instance for Jenkins
 resource "aws_instance" "jenkins" {
   ami                          = "ami-087d1c9a513324697" # Ubuntu 22.04 LTS (ap-south-1)
-  instance_type                = "t3.medium"
+  instance_type                = "t3.large"  # Upgraded from t3.medium for better performance (2 vCPU, 8GB RAM)
   key_name                     = aws_key_pair.taskops_key.key_name
   subnet_id                    = module.vpc.public_subnets[0]
   associate_public_ip_address  = true
@@ -15,9 +15,33 @@ resource "aws_instance" "jenkins" {
     apt-get update -y
     apt-get upgrade -y
     
+    # Add swap space for better performance (4GB swap)
+    fallocate -l 4G /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    echo '/swapfile none swap sw 0 0' | tee -a /etc/fstab
+    
+    # Optimize swappiness
+    echo 'vm.swappiness=10' | tee -a /etc/sysctl.conf
+    sysctl -p
+    
     # Install Docker
     curl -fsSL https://get.docker.com -o get-docker.sh
     sh get-docker.sh
+    
+    # Configure Docker for better performance
+    mkdir -p /etc/docker
+    cat > /etc/docker/daemon.json <<DOCKER_EOF
+    {
+      "log-driver": "json-file",
+      "log-opts": {
+        "max-size": "10m",
+        "max-file": "3"
+      },
+      "storage-driver": "overlay2"
+    }
+    DOCKER_EOF
     
     # Install Java 17 for Jenkins
     apt-get install -y openjdk-17-jdk
@@ -27,6 +51,9 @@ resource "aws_instance" "jenkins" {
     echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/ | tee /etc/apt/sources.list.d/jenkins.list > /dev/null
     apt-get update -y
     apt-get install -y jenkins
+    
+    # Optimize Jenkins JVM memory settings (allocate 4GB heap for Jenkins)
+    sed -i 's|JENKINS_JAVA_OPTIONS=.*|JENKINS_JAVA_OPTIONS="-Djava.awt.headless=true -Xmx4g -Xms2g -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxMetaspaceSize=512m"|' /etc/default/jenkins
     
     # Add jenkins user to docker group
     usermod -aG docker jenkins
@@ -49,9 +76,12 @@ resource "aws_instance" "jenkins" {
     unzip awscli-bundle.zip
     ./awscli-bundle/install -i /usr/local/aws -b /usr/local/bin/aws
     
-    # Enable services
+    # Enable and restart Docker with optimized settings
+    systemctl daemon-reload
     systemctl enable docker
-    systemctl start docker
+    systemctl restart docker
+    
+    # Enable and start Jenkins with optimized settings
     systemctl enable jenkins
     systemctl start jenkins
     
