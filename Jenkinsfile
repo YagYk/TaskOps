@@ -97,7 +97,6 @@ pipeline {
     stage('Login & Push to ECR') {
       steps {
         script {
-<<<<<<< HEAD
           echo 'Logging into AWS ECR and pushing image...'
           withCredentials([aws(credentialsId: 'aws-creds', accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
             sh """
@@ -108,34 +107,6 @@ pipeline {
               docker push ${ECR_REPO}:${IMAGE_TAG}
               docker push ${ECR_REPO}:${IMAGE_LATEST}
             """
-=======
-          if (params.DEPLOY_TARGET == 'eks') {
-            echo 'Pushing to ECR...'
-            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
-              sh '''
-                aws --version
-                aws ecr get-login-password --region $AWS_DEFAULT_REGION \
-                  | docker login --username AWS --password-stdin $ECR_REGISTRY
-
-                docker tag taskops:$IMAGE_LATEST $ECR_REPO:$IMAGE_TAG
-                docker tag taskops:$IMAGE_LATEST $ECR_REPO:$IMAGE_LATEST
-
-                docker push $ECR_REPO:$IMAGE_TAG
-                docker push $ECR_REPO:$IMAGE_LATEST
-              '''
-            }
-          } else {
-            echo 'Pushing to Docker Hub...'
-            withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
-              sh '''
-                echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
-                docker tag taskops:$IMAGE_LATEST $DOCKER_HUB_USER/taskops:$IMAGE_TAG
-                docker tag taskops:$IMAGE_LATEST $DOCKER_HUB_USER/taskops:$IMAGE_LATEST
-                docker push $DOCKER_HUB_USER/taskops:$IMAGE_TAG
-                docker push $DOCKER_HUB_USER/taskops:$IMAGE_LATEST
-              '''
-            }
->>>>>>> f5be0f5f164050d31dd1d3507c330f03fd747cc3
           }
         }
       }
@@ -144,66 +115,12 @@ pipeline {
     stage('Configure EKS kubeconfig') {
       steps {
         script {
-<<<<<<< HEAD
           echo 'Configuring kubectl for EKS cluster...'
           withCredentials([aws(credentialsId: 'aws-creds', accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
             sh """
               aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name ${EKS_CLUSTER_NAME} --kubeconfig ${KUBECONFIG}
               kubectl --kubeconfig=${KUBECONFIG} get nodes
             """
-=======
-          if (params.DEPLOY_TARGET == 'ec2') {
-            echo 'Deploying to EC2 using Docker Compose on this/remote EC2...'
-            sshagent(credentials: ['ec2-ssh']) {
-              // Copy compose
-              sh '''
-                scp -o StrictHostKeyChecking=no deploy/ec2/docker-compose.yml $EC2_USER@$EC2_HOST:/tmp/taskops-compose.yml
-              '''
-              // Login and run compose with image override env
-              withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
-                sh '''
-                  ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST '
-                    echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
-                    docker pull $DOCKER_HUB_USER/taskops:$IMAGE_LATEST || true
-                    TASKOPS_IMAGE=$DOCKER_HUB_USER/taskops:$IMAGE_LATEST docker compose -f /tmp/taskops-compose.yml up -d
-                  '
-                '''
-              }
-            }
-          } else {
-            echo 'Deploying to EKS using Terraform and Helm...'
-            dir('infra/terraform') {
-              withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
-                sh '''
-                  terraform --version
-                  terraform init -upgrade
-                  terraform apply -auto-approve
-                '''
-              }
-            }
-            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
-              sh '''
-                aws eks update-kubeconfig --region $AWS_DEFAULT_REGION --name taskops-eks
-                kubectl get nodes
-              '''
-            }
-            sh '''
-              helm upgrade --install taskops charts/taskops \
-                --namespace $K8S_NS --create-namespace \
-                --set image.repository=$ECR_REPO \
-                --set image.tag=$IMAGE_LATEST \
-                --set service.type=LoadBalancer \
-                --wait --timeout 5m
-            '''
-            if (params.INSTALL_MONITORING) {
-              sh '''
-                helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-                helm repo update
-                helm upgrade --install prom-stack prometheus-community/kube-prometheus-stack \
-                  --namespace monitoring --create-namespace --wait --timeout 10m
-              '''
-            }
->>>>>>> f5be0f5f164050d31dd1d3507c330f03fd747cc3
           }
         }
       }
