@@ -283,7 +283,6 @@ pipeline {
     stage('Smoke Tests') {
       steps {
         script {
-<<<<<<< HEAD
           echo 'Running smoke tests on EKS deployment...'
           sh """
             # Get LoadBalancer URL
@@ -306,32 +305,6 @@ pipeline {
               curl -f http://\${APP_URL}:8000/metrics | head -20 || echo "Metrics check failed"
             fi
           """
-=======
-          if (params.DEPLOY_TARGET == 'ec2') {
-            echo 'Running smoke tests on EC2 deployment...'
-            sh '''
-              curl -f http://$EC2_HOST:8000/healthz
-              curl -s http://$EC2_HOST:8000/metrics | head -20
-            '''
-          } else {
-            echo 'Running smoke tests on EKS deployment...'
-            sh '''
-              LB_HOST="$(kubectl get svc taskops -n $K8S_NS -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
-              if [ -z "$LB_HOST" ]; then
-                echo "LoadBalancer not ready, using port-forward fallback..."
-                (kubectl -n $K8S_NS port-forward svc/taskops 18000:8000 >/tmp/pf.log 2>&1 & echo $! > /tmp/pf.pid)
-                sleep 5
-                curl -f http://localhost:18000/healthz
-                curl -s http://localhost:18000/metrics | head -20
-                kill $(cat /tmp/pf.pid) || true
-              else
-                echo "Testing via LoadBalancer: $LB_HOST"
-                curl -f http://$LB_HOST:8000/healthz
-                curl -s http://$LB_HOST:8000/metrics | head -20
-              fi
-            '''
-          }
->>>>>>> f5be0f5f164050d31dd1d3507c330f03fd747cc3
         }
       }
     }
